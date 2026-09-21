@@ -83,7 +83,10 @@ while True:
         cv2.putText(annotated, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                     0.7, (0, 0, 255), 2)
 
+    cv2.namedWindow("VISTA - Perception", cv2.WINDOW_NORMAL)
+    cv2.moveWindow("VISTA - Perception", 100, 100)
     cv2.imshow("VISTA - Perception", annotated)
+    cv2.setWindowProperty("VISTA - Perception", cv2.WND_PROP_TOPMOST, 1)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
