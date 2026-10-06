@@ -21,12 +21,10 @@ transform = midas_transforms.small_transform
 # ---------- Localizer (CLIP, no reference photos needed) ----------
 print("Loading CLIP localizer...")
 localizer = Localizer()
-frame_i = 0
-location, loc_score = "unknown", 0
-
-# ---------- Room number reader (OCR) ----------
 room_reader = RoomReader()
 room_number = None
+frame_i = 0
+location, loc_score = "unknown", 0
 
 cam = cv2.VideoCapture(0)
 
@@ -40,6 +38,7 @@ def detect_staircase(depth_map):
     diffs = np.abs(np.diff(row_means))
     threshold = max(diffs.mean() + 2 * diffs.std(), 6)  # absolute floor
 
+    # count distinct jumps, not every row above the threshold
     peaks, prev = 0, False
     for d in diffs:
         cur = d > threshold
@@ -84,15 +83,10 @@ while True:
     is_staircase, step_count = detect_staircase(depth_display)
     is_hazard = detect_hazard(depth_display)
 
-    frame_i += 1
-
     # --- Localization (every 15th frame; CLIP is heavier than ORB) ---
+    frame_i += 1
     if frame_i % 15 == 0:
         location, loc_score = localizer.localize(frame)
-
-    # --- Room number OCR (every 10th frame) ---
-    if frame_i % 10 == 0:
-        room_number = room_reader.read(frame)
 
     # --- Combined output ---
     output = {
@@ -101,7 +95,6 @@ while True:
         "hazard_detected": is_hazard,
         "location": location,
         "location_score": int(loc_score),
-        "room_number": room_number,
     }
     print(output)
 
@@ -119,8 +112,6 @@ while True:
 
     # --- Display ---
     label = f"{location} ({loc_score}%)  "
-    if room_number:
-        label += f"ROOM {room_number}  "
     if is_staircase:
         label += f"STAIRCASE ({step_count})  "
     if is_hazard:
