@@ -1,0 +1,138 @@
+{
+  "nodes": [
+    {
+      "name": "HAZARD",
+      "location": "unknown",
+      "first_seen": "2026-10-06 09:41:33.170495",
+      "last_seen": "2026-10-06 09:45:14.018143",
+      "times_seen": 16
+    },
+    {
+      "name": "HAZARD",
+      "location": "near a wall",
+      "first_seen": "2026-10-06 09:41:38.202582",
+      "last_seen": "2026-10-06 09:44:49.347688",
+      "times_seen": 186
+    },
+    {
+      "name": "person",
+      "location": "near a wall",
+      "first_seen": "2026-10-06 09:41:48.945849",
+      "last_seen": "2026-10-06 09:44:49.347649",
+      "times_seen": 174
+    },
+    {
+      "name": "HAZARD",
+      "location": "classroom",
+      "first_seen": "2026-10-06 09:41:59.828460",
+      "last_seen": "2026-10-06 09:45:32.147299",
+      "times_seen": 102
+    },
+    {
+      "name": "person",
+      "location": "classroom",
+      "first_seen": "2026-10-06 09:42:01.840445",
+      "last_seen": "2026-10-06 09:45:33.154651",
+      "times_seen": 119
+    },
+    {
+      "name": "tie",
+      "location": "classroom",
+      "first_seen": "2026-10-06 09:42:07.872278",
+      "last_seen": "2026-10-06 09:45:33.154681",
+      "times_seen": 29
+    },
+    {
+      "name": "HAZARD",
+      "location": "near door",
+      "first_seen": "2026-10-06 09:42:15.422702",
+      "last_seen": "2026-10-06 09:45:47.464579",
+      "times_seen": 138
+    },
+    {
+      "name": "person",
+      "location": "near door",
+      "first_seen": "2026-10-06 09:42:17.435830",
+      "last_seen": "2026-10-06 09:45:46.958983",
+      "times_seen": 154
+    },
+    {
+      "name": "tie",
+      "location": "near a wall",
+      "first_seen": "2026-10-06 09:42:20.998396",
+      "last_seen": "2026-10-06 09:44:21.242100",
+      "times_seen": 26
+    },
+    {
+      "name": "chair",
+      "location": "near a wall",
+      "first_seen": "2026-10-06 09:42:52.355660",
+      "last_seen": "2026-10-06 09:44:49.347681",
+      "times_seen": 63
+    },
+    {
+      "name": "chair",
+      "location": "near door",
+      "first_seen": "2026-10-06 09:43:03.095854",
+      "last_seen": "2026-10-06 09:45:18.045592",
+      "times_seen": 80
+    },
+    {
+      "name": "tie",
+      "location": "near door",
+      "first_seen": "2026-10-06 09:43:07.267519",
+      "last_seen": "2026-10-06 09:45:45.346027",
+      "times_seen": 24
+    },
+    {
+      "name": "chair",
+      "location": "classroom",
+      "first_seen": "2026-10-06 09:43:22.738064",
+      "last_seen": "2026-10-06 09:45:27.108781",
+      "times_seen": 34
+    },
+    {
+      "name": "tv",
+      "location": "unknown",
+      "first_seen": "2026-10-06 09:45:13.514594",
+      "last_seen": "2026-10-06 09:45:14.018126",
+      "times_seen": 2
+    },
+    {
+      "name": "chair",
+      "location": "unknown",
+      "first_seen": "2026-10-06 09:45:13.514625",
+      "last_seen": "2026-10-06 09:45:14.018133",
+      "times_seen": 2
+    },
+    {
+      "name": "person",
+      "location": "unknown",
+      "first_seen": "2026-10-06 09:45:14.018099",
+      "last_seen": "2026-10-06 09:45:14.018117",
+      "times_seen": 1
+    },
+    {
+      "name": "tv",
+      "location": "near door",
+      "first_seen": "2026-10-06 09:45:15.023845",
+      "last_seen": "2026-10-06 09:45:18.045582",
+      "times_seen": 7
+    },
+    {
+      "name": "airplane",
+      "location": "near door",
+      "first_seen": "2026-10-06 09:45:15.526556",
+      "last_seen": "2026-10-06 09:45:18.045534",
+      "times_seen": 6
+    },
+    {
+      "name": "tv",
+      "location": "classroom",
+      "first_seen": "2026-10-06 09:45:25.599883",
+      "last_seen": "2026-10-06 09:45:25.599885",
+      "times_seen": 1
+    }
+  ],
+  "current_location": "near door"
+}

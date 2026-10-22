@@ -3,3 +3,11 @@ opencv-python
 torch
 torchvision
 timm
+numpy
+Pillow
+transformers
+accelerate
+pytesseract
+pyttsx3
+google-genai
+pyopenssl

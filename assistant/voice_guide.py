@@ -75,13 +75,15 @@ def ask_gemini(prompt_text, max_retries=3):
                     raise
     raise RuntimeError("All Gemini models unavailable right now.")
 
+SPEECH_FILE = "latest_speech.json"
+
 def speak(text):
-    print(f"VISTA (spoken): {text}")
-    local_engine = pyttsx3.init()
-    local_engine.setProperty("rate", 170)
-    local_engine.say(text)
-    local_engine.runAndWait()
-    local_engine.stop()
+    print(f"VISTA (to phone): {text}")
+    message = {"id": int(time.time() * 1000), "text": text}
+    tmp = SPEECH_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(message, f)
+    os.replace(tmp, SPEECH_FILE)
 
 def main():
     print("Voice guide running. Ctrl+C to stop.")

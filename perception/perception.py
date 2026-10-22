@@ -26,7 +26,9 @@ room_number = None
 frame_i = 0
 location, loc_score = "unknown", 0
 
-cam = cv2.VideoCapture(0)
+# CHANGED: no webcam - frames come from the phone via phone_bridge/server.py
+FRAME_FILE = "latest_frame.jpg"
+last_mtime = 0
 
 # ---------- Helper functions ----------
 def detect_staircase(depth_map):
@@ -56,10 +58,21 @@ def detect_hazard(depth_map):
     return bool(max_diff > threshold)
 
 # ---------- Main loop ----------
+print("Waiting for frames from the phone...")
 while True:
-    ret, frame = cam.read()
-    if not ret:
-        break
+    # NEW: read the latest frame the phone sent
+    try:
+        mtime = os.path.getmtime(FRAME_FILE)
+    except FileNotFoundError:
+        time.sleep(0.05)
+        continue
+    if mtime == last_mtime:          # no new frame from phone yet
+        time.sleep(0.01)
+        continue
+    last_mtime = mtime
+    frame = cv2.imread(FRAME_FILE)
+    if frame is None:                # caught it mid-swap, try next time
+        continue
 
     # --- Object detection ---
     results = yolo_model(frame)
@@ -124,5 +137,5 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-cam.release()
+# CHANGED: cam.release() removed - there is no webcam to release
 cv2.destroyAllWindows()

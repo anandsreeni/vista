@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VISTA</title>
+<style>
+  body { margin: 0; background: #000; color: #fff; font-family: sans-serif; text-align: center; }
+  #start { font-size: 2rem; padding: 2rem 3rem; margin-top: 35vh; }
+  #status { font-size: 1.2rem; padding: 1rem; }
+  video { width: 100%; }
+</style>
+</head>
+<body>
+<button id="start">Start VISTA</button>
+<div id="status">Not started</div>
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas" width="640" height="480" hidden></canvas>
+
+<script>
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const statusEl = document.getElementById("status");
+
+let lastSpokenId = null;   // id of the last sentence we spoke
+let lastReply = Date.now();
+let warned = false;        // already said "connection lost"?
+let busy = false;          // a frame is still uploading
+
+function say(text) {
+  speechSynthesis.cancel();                 // newest message wins
+  speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+}
+
+async function start() {
+  document.getElementById("start").hidden = true;
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "environment", width: 640, height: 480 },   // back camera
+    audio: false
+  });
+  video.srcObject = stream;
+  try {
+    await navigator.wakeLock.request("screen");   // keep screen on
+  } catch (e) {
+    statusEl.textContent = "Wake lock failed - set screen timeout manually";
+  }
+  say("VISTA started");
+  setInterval(sendFrame, 200);        // 5 frames per second
+  setInterval(checkConnection, 500);
+}
+
+function sendFrame() {
+  if (busy) {
+    return;                           // skip: never queue frames
+  }
+  busy = true;
+  canvas.getContext("2d").drawImage(video, 0, 0, 640, 480);
+  canvas.toBlob(async (blob) => {
+    try {
+      const res = await fetch("/frame", {
+        method: "POST",
+        body: blob,
+        signal: AbortSignal.timeout(2000)   // give up after 2 s
+      });
+      const speech = await res.json();
+      lastReply = Date.now();
+      statusEl.textContent = "Connected";
+      if (warned) {
+        warned = false;
+        say("Connection back");
+      }
+      if (lastSpokenId === null) {
+        lastSpokenId = speech.id;     // first reply: don't repeat an old message
+      } else if (speech.id !== lastSpokenId && speech.text) {
+        lastSpokenId = speech.id;
+        say(speech.text);
+      }
+    } catch (e) {
+      statusEl.textContent = "No connection";
+    }
+    busy = false;
+  }, "image/jpeg", 0.7);
+}
+
+function checkConnection() {
+  if (!warned && Date.now() - lastReply > 2000) {
+    warned = true;
+    say("Connection lost, please stop");
+  }
+}
+
+document.getElementById("start").onclick = start;
+</script>
+</body>
+</html>
