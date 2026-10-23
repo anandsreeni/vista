@@ -50,12 +50,13 @@ def detect_staircase(depth_map):
 
     return bool(peaks >= 4), int(peaks)
 
-def detect_hazard(depth_map):
-    h, w = depth_map.shape
-    center = depth_map[h//2:h, w//2-50:w//2+50]
-    max_diff = np.max(center) - np.min(center)
-    threshold = 60
-    return bool(max_diff > threshold)
+def detect_hazard(results, frame_w, frame_h):
+    for box in results[0].boxes.xyxy:
+        x1, y1, x2, y2 = [float(v) for v in box]
+        centre_x = (x1 + x2) / 2
+        if frame_w * 0.3 < centre_x < frame_w * 0.7 and (y2 - y1) > frame_h * 0.5:
+            return True
+    return False
 
 # ---------- Main loop ----------
 print("Waiting for frames from the phone...")
@@ -94,7 +95,8 @@ while True:
     depth_display = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
     is_staircase, step_count = detect_staircase(depth_display)
-    is_hazard = detect_hazard(depth_display)
+    frame_h, frame_w = frame.shape[:2]
+    is_hazard = detect_hazard(results, frame_w, frame_h)
 
     # --- Localization (every 15th frame; CLIP is heavier than ORB) ---
     frame_i += 1
