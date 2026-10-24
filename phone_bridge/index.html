@@ -5,13 +5,30 @@
 <title>VISTA</title>
 <style>
   body { margin: 0; background: #000; color: #fff; font-family: sans-serif; text-align: center; }
-  #start { font-size: 2rem; padding: 2rem 3rem; margin-top: 35vh; }
-  #status { font-size: 1.2rem; padding: 1rem; }
+  button { font-size: 1.6rem; padding: 1.2rem 2rem; margin: 0.6rem; border-radius: 12px; border: none; }
+  #menu { margin-top: 25vh; }
+  #status { font-size: 1.2rem; padding: 0.8rem; }
   video { width: 100%; }
+  #mapPanel { display: none; padding: 0.5rem; }
+  #wpName { font-size: 1.4rem; padding: 0.6rem; width: 80%; }
+  #captureBtn { background: #2e7d32; color: #fff; width: 85%; font-size: 2rem; }
+  #recordBtn { background: #c62828; color: #fff; width: 85%; font-size: 2rem; }
+  #undoBtn { background: #555; color: #fff; }
 </style>
 </head>
 <body>
-<button id="start">Start VISTA</button>
+<div id="menu">
+  <button id="startBtn">Start VISTA</button><br>
+  <button id="mapBtn">Map mode</button>
+</div>
+
+<div id="mapPanel">
+  <input id="wpName" placeholder="waypoint name, e.g. room_204"><br>
+  <button id="recordBtn">RECORD 4 s</button><br>
+  <button id="captureBtn">CAPTURE</button><br>
+  <button id="undoBtn">Undo last</button>
+</div>
+
 <div id="status">Not started</div>
 <video id="video" autoplay playsinline muted></video>
 <canvas id="canvas" width="640" height="480" hidden></canvas>
@@ -31,8 +48,8 @@ function say(text) {
   speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 }
 
-async function start() {
-  document.getElementById("start").hidden = true;
+async function openCamera() {
+  document.getElementById("menu").style.display = "none";
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "environment", width: 640, height: 480 },   // back camera
     audio: false
@@ -43,6 +60,17 @@ async function start() {
   } catch (e) {
     statusEl.textContent = "Wake lock failed - set screen timeout manually";
   }
+}
+
+// Same 640x480 JPEG for both modes, so map photos look exactly like live frames
+function grabFrame(callback) {
+  canvas.getContext("2d").drawImage(video, 0, 0, 640, 480);
+  canvas.toBlob(callback, "image/jpeg", 0.7);
+}
+
+// ---------------- Navigation mode ----------------
+async function startVista() {
+  await openCamera();
   say("VISTA started");
   setInterval(sendFrame, 200);        // 5 frames per second
   setInterval(checkConnection, 500);
@@ -53,8 +81,7 @@ function sendFrame() {
     return;                           // skip: never queue frames
   }
   busy = true;
-  canvas.getContext("2d").drawImage(video, 0, 0, 640, 480);
-  canvas.toBlob(async (blob) => {
+  grabFrame(async (blob) => {
     try {
       const res = await fetch("/frame", {
         method: "POST",
@@ -78,7 +105,7 @@ function sendFrame() {
       statusEl.textContent = "No connection";
     }
     busy = false;
-  }, "image/jpeg", 0.7);
+  });
 }
 
 function checkConnection() {
@@ -88,7 +115,73 @@ function checkConnection() {
   }
 }
 
-document.getElementById("start").onclick = start;
+// ---------------- Mapping mode ----------------
+async function startMapping() {
+  await openCamera();
+  document.getElementById("mapPanel").style.display = "block";
+  statusEl.textContent = "Mapping: type a name, then CAPTURE";
+}
+
+function capture() {
+  const name = document.getElementById("wpName").value;
+  grabFrame(async (blob) => {
+    try {
+      const res = await fetch("/capture?name=" + encodeURIComponent(name), {
+        method: "POST",
+        body: blob,
+        signal: AbortSignal.timeout(3000)
+      });
+      const r = await res.json();
+      if (r.ok) {
+        statusEl.textContent = r.name + ": " + r.count + " photos";
+        navigator.vibrate(100);       // feel it worked without looking
+      } else {
+        statusEl.textContent = r.error;
+      }
+    } catch (e) {
+      statusEl.textContent = "Capture failed - check connection";
+    }
+  });
+}
+
+// Record: 1 frame every 0.5 s for 4 s = 8 photos, while walking slowly to the spot
+let recording = false;
+
+function record() {
+  if (recording) {
+    return;                           // already recording, ignore extra taps
+  }
+  recording = true;
+  document.getElementById("recordBtn").textContent = "RECORDING...";
+  let shots = 0;
+  const timer = setInterval(() => {
+    capture();
+    shots += 1;
+    if (shots >= 8) {
+      clearInterval(timer);
+      recording = false;
+      document.getElementById("recordBtn").textContent = "RECORD 4 s";
+      navigator.vibrate([200, 100, 200]);   // double buzz = done
+    }
+  }, 500);
+}
+
+async function undo() {
+  const name = document.getElementById("wpName").value;
+  try {
+    const res = await fetch("/undo?name=" + encodeURIComponent(name), { method: "POST" });
+    const r = await res.json();
+    statusEl.textContent = r.ok ? (r.name + ": " + r.count + " photos") : r.error;
+  } catch (e) {
+    statusEl.textContent = "Undo failed - check connection";
+  }
+}
+
+document.getElementById("startBtn").onclick = startVista;
+document.getElementById("mapBtn").onclick = startMapping;
+document.getElementById("captureBtn").onclick = capture;
+document.getElementById("undoBtn").onclick = undo;
+document.getElementById("recordBtn").onclick = record;
 </script>
 </body>
 </html>
