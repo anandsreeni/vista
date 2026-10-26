@@ -1,6 +1,8 @@
 {
   "_how_to": "names = places that show up in the phone's 'Where to?' list, with how VISTA says them. edges = one line per walk between two spots, in the direction you walk it; 'say' is spoken when the user reaches 'from' on the way to their destination. Add a reverse edge if people walk it the other way (left and right swap!).",
 
+  "start": "f0_entrance",
+
   "names": {
     "f0_entrance": "the main entrance",
     "f0_office": "the office",
@@ -19,6 +21,7 @@
     {"from": "f0_washroom_women",  "to": "f0_room_104",        "say": "Walk straight about 35 steps. Room 104 will be on your left."},
     {"from": "f0_room_104",        "to": "f0_staffroom",       "say": "Walk straight about 30 steps. The staffroom door will be on your left."},
     {"from": "f0_staffroom",       "to": "f0_entrance__inside", "say": "Walk straight about 20 steps. The entrance will be on your left."},
-    {"from": "f0_entrance__inside", "to": "f0_outside",         "say": "Walk straight about 15 steps and out through the main door."}
+    {"from": "f0_entrance__inside", "to": "f0_outside",         "say": "Walk straight about 15 steps and out through the main door."},
+    {"from": "f0_outside",         "to": "f0_entrance",        "say": "Turn around and walk in through the main door."}
   ]
 }

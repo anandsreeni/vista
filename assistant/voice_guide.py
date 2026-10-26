@@ -1,3 +1,13 @@
+"""
+VISTA voice guide - turns "take me to the office" into step-by-step spoken directions.
+
+How it knows where the user is:
+  1. Step counter + turn sensor from the phone   (main guide between spots)
+  2. "I'm at the entrance" said by the user      (sets the starting point)
+  3. Camera recognising a mapped spot            (starting point, or fallback when the step counter is off)
+
+Directions come from route.json.
+"""
 import json
 import os
 import re
@@ -14,13 +24,20 @@ ROUTE_FILE = os.path.join(HERE, "route.json")
 DESTINATION_FILE = os.path.join(HERE, "destination.json")
 SPEECH_FILE = os.path.join(HERE, "latest_speech.json")
 HERE_FILE = os.path.join(HERE, "here.json")                # "I'm at the entrance" from the phone
+MOTION_FILE = os.path.join(HERE, "motion.json")            # step count + turn from the phone
 
 # ---------- Timing ----------
 HAZARD_REPEAT = 6        # seconds before the same safety warning is repeated
 STAIRS_REPEAT = 8
-NAV_REPEAT = 30          # repeat the current direction if the user hasn't reached a new spot
+NAV_REPEAT = 30          # repeat the current direction if the user is standing still
 SAFETY_GAP = 2.5         # let a warning finish before a direction is spoken
 GEMINI_EVERY = 20        # scene description only when NO destination is set
+
+# ---------- Step counting ----------
+TURN_DONE_DEG = 60       # turned at least this much = the turn is done
+TURN_AROUND_DEG = 120    # for "Turn around"
+NEAR_STEPS = 3           # "In about 3 steps you will reach junction 1"
+OVERSHOOT_STEPS = 8      # this many steps past the turn = probably missed it
 
 # ---------- Gemini (optional: only used when no destination is chosen) ----------
 USE_GEMINI = True
@@ -65,6 +82,14 @@ def speak(text):
             time.sleep(0.02)
 
 
+def fresh_motion():
+    """Latest step count + turn from the phone, or None if the sensor isn't sending."""
+    m = read_json(MOTION_FILE, None)
+    if m and time.time() - m.get("t", 0) < 3:
+        return m
+    return None
+
+
 # ---------- Route ----------
 def place_of(waypoint):
     """Same place seen from the other direction: 'f0_staffroom__back' -> 'f0_staffroom'"""
@@ -85,7 +110,8 @@ def load_route():
         for b in all_spots:
             if a != b and place_of(a) == place_of(b):
                 edges.setdefault(a, {}).setdefault(b, "Turn around.")
-    return route.get("names", {}), edges
+    start = route.get("start", "f0_entrance")      # where a trip starts if we don't know where the user is
+    return route.get("names", {}), edges, start
 
 
 def spoken_name(waypoint, names):
@@ -125,17 +151,83 @@ def find_path(start, goal, edges):
     return None
 
 
-def direction_message(waypoint, destination, names, edges):
-    here = spoken_name(waypoint, names)
-    if not destination:
-        return f"You are at {here}."
-    if place_of(waypoint) == destination:
-        return f"You have arrived at {here}."
-    path = find_path(waypoint, destination, edges)
-    if path is None:
-        return f"You are at {here}. I don't have a route from here to {spoken_name(destination, names)}."
-    next_spot = path[1]
-    return f"You are at {here}. {edges[waypoint][next_spot]}"
+def path_steps(path, edges):
+    return sum(walk_length(edges[a][b]) for a, b in zip(path, path[1:]))
+
+
+# ---------- Following one walk with the step counter ----------
+TURN_RE = re.compile(r"then turn (left|right)", re.I)
+SIDE_RE = re.compile(r"on your (left|right)", re.I)
+
+
+class Segment:
+    """One walk between two spots, e.g. entrance -> junction 1 (13 steps, then turn left)."""
+
+    def __init__(self, frm, to, say, to_name, motion):
+        self.frm = frm
+        self.to = to
+        self.to_name = to_name
+        self.steps_needed = walk_length(say)
+        turn = TURN_RE.search(say)
+        self.end_turn = turn.group(1).lower() if turn else None          # turn at the END of the walk
+        self.turn_around = say.strip().lower().startswith("turn around")
+        side = SIDE_RE.search(say)
+        self.side = side.group(1).lower() if side else None              # door on your left/right
+        self.steps0 = motion["steps"] if motion else None
+        self.yaw0 = motion["yaw"] if motion else None
+        self.near_said = False
+        self.turn_said = False
+        self.wrong_said = False
+        self.overshoot_said = False
+
+    def walked(self, motion):
+        if self.steps0 is None or motion is None:
+            return 0
+        return motion["steps"] - self.steps0
+
+    def update(self, motion):
+        """Returns (sentence to say or None, spot reached or None, reached by turning?)."""
+        if self.steps0 is None:                                         # first motion reading
+            self.steps0 = motion["steps"]
+            self.yaw0 = motion["yaw"]
+            return None, None, False
+        walked = motion["steps"] - self.steps0
+        turned = motion["yaw"] - self.yaw0                              # + = left, - = right
+        n = self.steps_needed
+
+        if self.turn_around:
+            if abs(turned) >= TURN_AROUND_DEG:
+                return None, self.to, True
+            return None, None, False
+
+        if self.end_turn:
+            want = 1 if self.end_turn == "left" else -1
+            if walked >= n * 0.6 and turned * want >= TURN_DONE_DEG:
+                return None, self.to, True                              # turned the right way
+            if abs(turned) < 30:
+                self.wrong_said = False
+            if walked >= n * 0.6 and turned * want <= -TURN_DONE_DEG and not self.wrong_said:
+                self.wrong_said = True
+                return f"That is the wrong way. Turn back, then turn {self.end_turn}.", None, False
+            if not self.near_said and n >= 6 and walked >= n - NEAR_STEPS:
+                self.near_said = True
+                return (f"In about {NEAR_STEPS} steps you will reach {self.to_name}. "
+                        f"Turn {self.end_turn} there."), None, False
+            if not self.turn_said and walked >= n:
+                self.turn_said = True
+                return f"You are at {self.to_name}. Turn {self.end_turn} now.", None, False
+            if not self.overshoot_said and walked >= n + OVERSHOOT_STEPS:
+                self.overshoot_said = True
+                return "You may have passed the turn. Stop, turn around, and walk back a few steps.", None, False
+            return None, None, False
+
+        # plain walk to a door / spot - arrives when the step count is reached
+        if not self.near_said and n >= 6 and walked >= n - NEAR_STEPS:
+            self.near_said = True
+            return f"About {NEAR_STEPS} more steps to {self.to_name}.", None, False
+        if walked >= n:
+            return None, self.to, False
+        return None, None, False
 
 
 # ---------- Gemini scene description (kept from the original version) ----------
@@ -173,60 +265,104 @@ def gemini_scene_sentence():
 # ---------- Main loop ----------
 def main():
     print("Voice guide running. Ctrl+C to stop.")
-    names, edges = load_route()
-    print(f"Route loaded: {sum(len(v) for v in edges.values())} directions, {len(names)} destinations")
+    names, edges, start_spot = load_route()
+    print(f"Route loaded: {sum(len(v) for v in edges.values())} directions, "
+          f"{len(names)} destinations, trips start at '{start_spot}' if location is unknown")
 
-    last_waypoint = None
+    destination_id = read_json(DESTINATION_FILE, {}).get("id")   # don't re-announce an old destination
+    here_id = read_json(HERE_FILE, {}).get("id")                 # ignore an old "I'm at"
+
+    destination = None
+    known_spot = None             # best guess of where the user is (said, recognised, or counted)
+    segment = None                # the walk we're following with the step counter
+    visited = set()               # spots already passed on this trip
     last_nav_text = None
     last_nav_time = 0
     last_hazard_time = 0
     last_stairs_time = 0
     safety_until = 0
     last_gemini_time = 0
-    destination = None
-    destination_id = None
     last_status_time = 0
-    here_id = read_json(HERE_FILE, {}).get("id")   # ignore an old message from before we started
+    last_steps_seen = None
+
+    def begin_trip(spot, opening):
+        """Speak the first direction from `spot` and start following it with the step counter."""
+        nonlocal segment, visited, last_nav_text, last_nav_time, known_spot, safety_until
+        known_spot = spot
+        visited = {spot}
+        segment = None
+        here_name = spoken_name(spot, names)
+        dest_name = spoken_name(destination, names)
+        if place_of(spot) == destination:
+            last_nav_text = f"You are already at {dest_name}."
+        else:
+            path = find_path(spot, destination, edges)
+            if path is None:
+                last_nav_text = f"You are at {here_name}. I don't have a route from here to {dest_name}."
+            else:
+                segment = Segment(spot, path[1], edges[spot][path[1]],
+                                  spoken_name(path[1], names), fresh_motion())
+                last_nav_text = (f"{opening}Going to {dest_name}, about {path_steps(path, edges)} steps. "
+                                 f"{edges[spot][path[1]]}")
+        last_nav_time = time.time()
+        speak(last_nav_text)
+        safety_until = time.time() + SAFETY_GAP
 
     while True:
         now = time.time()
         p = read_json(PERCEPTION_FILE, {})
         waypoint = p.get("waypoint", "unknown")
+        motion = fresh_motion()
 
         # Status line every 2 s: shows what VISTA thinks right now
         if now - last_status_time >= 2:
             last_status_time = now
-            if not p:
-                print("[STATUS] no data from perception.py - is it running and getting frames?")
+            camera = f"camera: {waypoint} ({p.get('location_score', 0)})" if p else "camera: NO DATA"
+            if motion:
+                walked = segment.walked(motion) if segment else 0
+                need = f"/{segment.steps_needed}" if segment else ""
+                steps = f"steps {walked}{need}, turned {motion['yaw']:.0f}"
             else:
-                print(f"[STATUS] I see: {waypoint} (score {p.get('location_score', 0)})"
-                      f"  |  going to: {destination or 'nothing'}")
+                steps = "step counter: OFF (no data from phone)"
+            walk = f"{segment.frm} -> {segment.to}" if segment else "-"
+            print(f"[STATUS] {camera} | {steps} | going to: {destination or 'nothing'} | walk: {walk}")
 
-        # --- Destination chosen on the phone ---
+        # Remember where the user is from the camera when no trip is running
+        if waypoint != "unknown" and segment is None:
+            known_spot = waypoint
+
+        # --- Destination chosen on the phone ("take me to the office") ---
         d = read_json(DESTINATION_FILE, {"to": None, "id": 0})
         if d.get("id") != destination_id:
             destination_id = d.get("id")
             destination = d.get("to") or None
-            names, edges = load_route()          # pick up route.json edits without restarting
-            if destination and waypoint == "unknown":
-                speak(f"Going to {spoken_name(destination, names)}. Start walking. "
-                      "I will guide you as soon as I recognise where you are.")
-                safety_until = now + 5
-            elif destination:
-                speak(f"Going to {spoken_name(destination, names)}.")
-                safety_until = now + SAFETY_GAP
-            last_waypoint = None                 # give a fresh direction from where we are
+            names, edges, start_spot = load_route()          # pick up route.json edits without restarting
+            segment = None
+            if destination:
+                # "I'm at X" said in the same sentence arrives a moment later
+                time.sleep(0.6)
+                h = read_json(HERE_FILE, {})
+                if h.get("id") != here_id and h.get("at"):
+                    here_id = h.get("id")
+                    begin_trip(h["at"], f"You are at {spoken_name(h['at'], names)}. ")
+                elif known_spot:
+                    begin_trip(known_spot, f"You are at {spoken_name(known_spot, names)}. ")
+                else:
+                    begin_trip(start_spot, f"Starting from {spoken_name(start_spot, names)}. ")
+                if motion is None:
+                    print("[WARNING] step counter is OFF - only the camera can guide. "
+                          "Check the phone shows 'steps ...' at the bottom.")
 
         # --- User said where they are ("I'm at the entrance") ---
         h = read_json(HERE_FILE, {})
         if h.get("id") != here_id:
             here_id = h.get("id")
             if h.get("at"):
-                last_waypoint = h["at"]
-                last_nav_text = direction_message(h["at"], destination, names, edges)
-                last_nav_time = now
-                speak(last_nav_text)
-                safety_until = now + SAFETY_GAP
+                if destination:
+                    begin_trip(h["at"], f"You are at {spoken_name(h['at'], names)}. ")
+                else:
+                    known_spot = h["at"]
+                    speak(f"You are at {spoken_name(h['at'], names)}. Tap the screen and tell me where to go.")
 
         # --- 1. Safety first: interrupts everything ---
         if p.get("hazard_detected") and now - last_hazard_time > HAZARD_REPEAT:
@@ -238,19 +374,52 @@ def main():
             last_stairs_time = now
             safety_until = now + SAFETY_GAP
 
-        # --- 2. Directions: the moment a new spot is recognised ---
-        elif now >= safety_until and waypoint != "unknown" and waypoint != last_waypoint:
-            last_waypoint = waypoint
-            last_nav_text = direction_message(waypoint, destination, names, edges)
-            last_nav_time = now
-            speak(last_nav_text)
+        # --- 2. Step counter + turn sensor: the main guide during a trip ---
+        elif segment and motion and now >= safety_until:
+            sentence, reached, by_turning = segment.update(motion)
+            if sentence:
+                speak(sentence)
+                last_nav_text = sentence
+                last_nav_time = now
+            elif reached:
+                side = segment.side
+                known_spot = reached
+                visited.add(reached)
+                here_name = spoken_name(reached, names)
+                if place_of(reached) == destination:
+                    extra = f" It is on your {side}." if side else ""
+                    last_nav_text = f"You have arrived at {here_name}.{extra}"
+                    segment = None
+                else:
+                    path = find_path(reached, destination, edges)
+                    if path is None:
+                        last_nav_text = f"You are at {here_name}. I don't have a route from here."
+                        segment = None
+                    else:
+                        segment = Segment(reached, path[1], edges[reached][path[1]],
+                                          spoken_name(path[1], names), motion)
+                        start = "Good. " if by_turning else f"You are at {here_name}. "
+                        last_nav_text = start + edges[reached][path[1]]
+                last_nav_time = now
+                speak(last_nav_text)
+                if segment is None:
+                    last_nav_text = None          # trip finished - don't keep repeating
 
-        # --- 3. Repeat the direction if the user is taking a while ---
+        # --- 3. Camera: only guides when the step counter is OFF ---
+        elif (destination and motion is None and now >= safety_until
+              and waypoint != "unknown" and waypoint not in visited):
+            visited.add(waypoint)
+            begin_trip(waypoint, f"You are at {spoken_name(waypoint, names)}. ")
+
+        # --- 4. Repeat the direction if the user is standing still ---
         elif destination and last_nav_text and now >= safety_until and now - last_nav_time > NAV_REPEAT:
+            steps_now = motion["steps"] if motion else None
+            if steps_now is None or steps_now == last_steps_seen:
+                speak(last_nav_text)
             last_nav_time = now
-            speak(last_nav_text)
+            last_steps_seen = steps_now
 
-        # --- 4. No destination: occasional Gemini scene description ---
+        # --- 5. No destination: occasional Gemini scene description ---
         elif client and not destination and now >= safety_until and now - last_gemini_time > GEMINI_EVERY:
             last_gemini_time = now
             try:

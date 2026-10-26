@@ -9,6 +9,7 @@ ROOT = os.path.dirname(BASE)
 FRAME_FILE = os.path.join(ROOT, "perception", "latest_frame.jpg")
 SPEECH_FILE = os.path.join(ROOT, "assistant", "latest_speech.json")
 WAYPOINT_DIR = os.path.join(ROOT, "perception", "waypoints")
+MOTION_FILE = os.path.join(ROOT, "assistant", "motion.json")
 
 app = Flask(__name__)
 
@@ -16,6 +17,11 @@ app = Flask(__name__)
 @app.route("/")
 def index():
     return send_from_directory(BASE, "index.html")
+
+
+@app.route("/sensor")
+def sensor_test():
+    return send_from_directory(BASE, "sensor.html")
 
 
 @app.route("/frame", methods=["POST"])
@@ -31,7 +37,27 @@ def frame():
         except PermissionError:      # Windows: perception.py has the file open
             time.sleep(0.02)
 
-    # 2. Reply with the latest sentence for the phone to speak
+    # 2. Step count + turn from the phone's motion sensor (voice_guide.py reads this)
+    if "X-Steps" in request.headers:
+        try:
+            motion = {
+                "steps": int(request.headers["X-Steps"]),
+                "yaw": float(request.headers.get("X-Yaw", 0)),
+                "t": time.time(),
+            }
+            tmp = MOTION_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(motion, f)
+            for attempt in range(5):
+                try:
+                    os.replace(tmp, MOTION_FILE)
+                    break
+                except PermissionError:
+                    time.sleep(0.02)
+        except ValueError:
+            pass
+
+    # 3. Reply with the latest sentence for the phone to speak
     speech = {"id": 0, "text": ""}
     try:
         with open(SPEECH_FILE, "r") as f:
@@ -115,6 +141,31 @@ def set_here():
         json.dump({"at": at, "id": int(time.time() * 1000)}, f)
     print(f"[NAV] user says they are at: {at}")
     return jsonify({"ok": True, "at": at})
+
+
+LEGS_FILE = os.path.join(ROOT, "assistant", "mapped_legs.json")
+
+
+@app.route("/leg", methods=["POST"])
+def save_leg():
+    # Map mode: the walk between two spots, measured by the phone (steps + turn)
+    leg = {
+        "from": request.args.get("from", ""),
+        "to": request.args.get("to", ""),
+        "steps": int(request.args.get("steps", 0)),
+        "yaw": float(request.args.get("yaw", 0)),
+        "t": time.time(),
+    }
+    try:
+        with open(LEGS_FILE, "r") as f:
+            legs = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        legs = []
+    legs.append(leg)
+    with open(LEGS_FILE, "w") as f:
+        json.dump(legs, f, indent=1)
+    print(f"[MAP] walk {leg['from']} -> {leg['to']}: {leg['steps']} steps, turned {leg['yaw']:.0f}")
+    return jsonify({"ok": True, "count": len(legs)})
 
 
 if __name__ == "__main__":

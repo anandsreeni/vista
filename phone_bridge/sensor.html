@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VISTA sensor test</title>
+<style>
+  body { margin: 0; background: #000; color: #fff; font-family: sans-serif; text-align: center; padding: 1rem; }
+  .big { font-size: 3rem; font-weight: bold; margin: 0.2rem 0; }
+  .label { font-size: 1.1rem; color: #aaa; margin-top: 1rem; }
+  button { font-size: 1.5rem; padding: 1rem 2rem; border-radius: 12px; border: none; margin: 0.5rem; }
+  #version { color: #666; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div id="version">sensor test v6</div>
+<button id="startBtn">Start sensor test</button>
+
+<div class="label">sensor events per second (should be 20+)</div>
+<div class="big" id="rate">-</div>
+
+<div class="label">STEPS (walk 10 steps)</div>
+<div class="big" id="steps">0</div>
+
+<div class="label">bounce now / biggest while walking</div>
+<div class="big" id="bounce">-</div>
+
+<div class="label">TURNED (turn left = positive)</div>
+<div class="big" id="yaw">0°</div>
+
+<div class="label">raw: gravity x / y / z and rotation available?</div>
+<div id="raw" style="font-size:1.2rem">-</div>
+
+<button id="resetBtn">Reset</button>
+<div id="sensText" class="label"></div>
+
+<script>
+// Same step + turn method as the main VISTA page
+const params = new URLSearchParams(location.search);
+const STEP_DELTA = parseFloat(params.get("sens") || "0.6");
+const STEP_RESET = STEP_DELTA * 0.3;
+const MIN_STEP_MS = 300;
+const TURN_SIGN = params.get("flip") === "1" ? -1 : 1;
+document.getElementById("sensText").textContent = "sensitivity sens=" + STEP_DELTA + (TURN_SIGN < 0 ? "  flip=1" : "");
+
+let steps = 0;
+let yaw = 0;
+let smoothMag = null;
+let baseline = null;
+let aboveHigh = false;
+let lastStepTime = 0;
+let gravity = { x: 0, y: 9.8, z: 0 };
+let lastTime = null;
+let events = 0;
+let bounceNow = 0;
+let bounceMax = 0;
+let rotationOK = false;
+let lastA = null;
+
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x === null) {
+    return;
+  }
+  events += 1;
+  lastA = a;
+  const now = performance.now();
+  const mag = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+  if (smoothMag === null) {
+    smoothMag = mag;
+    baseline = mag;
+  }
+  smoothMag = 0.6 * smoothMag + 0.4 * mag;
+  baseline = 0.98 * baseline + 0.02 * mag;
+  const delta = smoothMag - baseline;
+  bounceNow = Math.max(bounceNow, delta);
+  bounceMax = Math.max(bounceMax, delta);
+  if (!aboveHigh && delta > STEP_DELTA && Date.now() - lastStepTime > MIN_STEP_MS) {
+    steps += 1;
+    lastStepTime = Date.now();
+    aboveHigh = true;
+    navigator.vibrate(30);
+  }
+  if (aboveHigh && delta < STEP_RESET) {
+    aboveHigh = false;
+  }
+
+  gravity.x = 0.9 * gravity.x + 0.1 * a.x;
+  gravity.y = 0.9 * gravity.y + 0.1 * a.y;
+  gravity.z = 0.9 * gravity.z + 0.1 * a.z;
+  const r = e.rotationRate;
+  if (r && r.alpha !== null) {
+    rotationOK = true;
+    if (lastTime !== null) {
+      const g = Math.sqrt(gravity.x * gravity.x + gravity.y * gravity.y + gravity.z * gravity.z);
+      const upRate = (r.beta * gravity.x + r.gamma * gravity.y + r.alpha * gravity.z) / g;
+      yaw += TURN_SIGN * upRate * Math.min((now - lastTime) / 1000, 0.2);
+    }
+  }
+  lastTime = now;
+}
+
+function show() {
+  document.getElementById("rate").textContent = events;
+  document.getElementById("steps").textContent = steps;
+  document.getElementById("bounce").textContent = bounceNow.toFixed(1) + " / " + bounceMax.toFixed(1);
+  const side = yaw > 20 ? " LEFT" : (yaw < -20 ? " RIGHT" : "");
+  document.getElementById("yaw").textContent = Math.round(yaw) + "°" + side;
+  document.getElementById("raw").textContent = lastA
+    ? lastA.x.toFixed(1) + " / " + lastA.y.toFixed(1) + " / " + lastA.z.toFixed(1) + "   rotation: " + (rotationOK ? "YES" : "NO")
+    : "no data";
+  if (events === 0) {
+    document.getElementById("rate").textContent = "0 - NO SENSOR DATA";
+  }
+  events = 0;
+  bounceNow = 0;
+}
+
+document.getElementById("startBtn").onclick = async () => {
+  if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+    try {
+      await DeviceMotionEvent.requestPermission();
+    } catch (e) {
+      // not an iPhone
+    }
+  }
+  window.addEventListener("devicemotion", onMotion);
+  setInterval(show, 1000);
+  document.getElementById("startBtn").textContent = "Running...";
+};
+document.getElementById("resetBtn").onclick = () => {
+  steps = 0;
+  yaw = 0;
+  bounceMax = 0;
+};
+</script>
+</body>
+</html>

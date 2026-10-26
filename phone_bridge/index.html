@@ -26,10 +26,13 @@
 <button id="mapBtn">map mode</button>
 
 <div id="mapPanel">
+  <div id="mapInfo" style="font-size:1.3rem; color:#80d8ff; padding:0.4rem">Walk so far: 0 steps</div>
   <input id="wpName" placeholder="spot name ONLY, e.g. f1_room_204"><br>
+  <button id="markBtn" style="background:#1565c0; color:#fff; width:85%; font-size:2rem">MARK SPOT</button><br>
   <button id="recordBtn">RECORD 4 s</button><br>
   <button id="captureBtn">CAPTURE</button><br>
   <button id="undoBtn">Undo last</button>
+  <button id="newWalkBtn" style="background:#444; color:#fff">Start new walk</button>
 </div>
 
 <div id="hint"></div>
@@ -274,8 +277,149 @@ function typedDestination(event) {
   handleHeard(document.getElementById("typedDest").value, true);
 }
 
+// ---------------- Step counter + turn sensor ----------------
+// Steps: the chest bounces up and down once per step -> peaks in total acceleration.
+// Turns: gyroscope rotation around the "up" direction (found from gravity), added up over time.
+//        + = turned LEFT, - = turned RIGHT. If the phone shows the wrong side, open the page
+//        with ?flip=1 at the end of the address.
+// Steps are found as bounces ABOVE the phone's own average, so it works for any phone / belt.
+// Change with ?sens=0.4 (more sensitive) or ?sens=1.0 (less) at the end of the address.
+const STEP_DELTA = parseFloat(new URLSearchParams(location.search).get("sens") || "0.6");  // m/s2 above average
+const STEP_RESET = STEP_DELTA * 0.3;                                                         // drop back below this
+const MIN_STEP_MS = 300;     // nobody takes more than ~3 steps per second
+const TURN_SIGN = new URLSearchParams(location.search).get("flip") === "1" ? -1 : 1;
+
+let steps = 0;
+let yaw = 0;                 // degrees turned since start
+let smoothMag = null;
+let baseline = null;         // slow average of the movement = "standing" level
+let aboveHigh = false;
+let bounce = 0;              // biggest bounce in the last second (shown on screen)
+let bounceTime = 0;
+let lastStepTime = 0;
+let gravity = { x: 0, y: 9.8, z: 0 };
+let lastMotionTime = null;
+let motionWorking = false;
+
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x === null) {
+    return;
+  }
+  motionWorking = true;
+  const now = performance.now();
+
+  // --- steps ---
+  const mag = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+  if (smoothMag === null) {
+    smoothMag = mag;
+    baseline = mag;
+  }
+  smoothMag = 0.6 * smoothMag + 0.4 * mag;            // remove jitter
+  baseline = 0.98 * baseline + 0.02 * mag;            // slow average
+  const delta = smoothMag - baseline;
+  if (delta > bounce || Date.now() - bounceTime > 1000) {
+    bounce = Math.max(delta, 0);
+    bounceTime = Date.now();
+  }
+  if (!aboveHigh && delta > STEP_DELTA && Date.now() - lastStepTime > MIN_STEP_MS) {
+    steps += 1;
+    lastStepTime = Date.now();
+    aboveHigh = true;
+  }
+  if (aboveHigh && delta < STEP_RESET) {
+    aboveHigh = false;
+  }
+
+  // --- turns ---
+  gravity.x = 0.9 * gravity.x + 0.1 * a.x;            // slow average = which way is "up"
+  gravity.y = 0.9 * gravity.y + 0.1 * a.y;
+  gravity.z = 0.9 * gravity.z + 0.1 * a.z;
+  const r = e.rotationRate;
+  if (!orientationWorking && r && r.alpha !== null && lastMotionTime !== null) {   // gyro only as a backup
+    const g = Math.sqrt(gravity.x * gravity.x + gravity.y * gravity.y + gravity.z * gravity.z);
+    // rotationRate: beta = around x, gamma = around y, alpha = around z (degrees per second)
+    const upRate = (r.beta * gravity.x + r.gamma * gravity.y + r.alpha * gravity.z) / g;
+    const dt = Math.min((now - lastMotionTime) / 1000, 0.2);
+    yaw += TURN_SIGN * upRate * dt;
+  }
+  lastMotionTime = now;
+}
+
+// ---- Turns from the phone's orientation sensor (Android already corrects and combines its sensors) ----
+// Works out which way the CAMERA points (like a compass), however the phone is mounted.
+let lastHeading = null;
+let orientationWorking = false;
+
+function headingFrom(alpha, beta, gamma) {
+  const d = Math.PI / 180;
+  const cA = Math.cos(alpha * d);
+  const sA = Math.sin(alpha * d);
+  const cB = Math.cos(beta * d);
+  const sB = Math.sin(beta * d);
+  const cG = Math.cos(gamma * d);
+  const sG = Math.sin(gamma * d);
+  const east = -(cG * sA * sB + cA * sG);        // the camera looks along the phone's -z axis
+  const north = -(sA * sG - cA * cG * sB);
+  if (Math.abs(east) + Math.abs(north) < 0.2) {
+    return null;                                 // camera pointing straight up or down
+  }
+  return Math.atan2(east, north) / d;
+}
+
+function onOrientation(e) {
+  if (e.alpha === null || e.beta === null || e.gamma === null) {
+    return;
+  }
+  const h = headingFrom(e.alpha, e.beta, e.gamma);
+  if (h === null) {
+    return;
+  }
+  orientationWorking = true;
+  if (lastHeading !== null) {
+    let dh = h - lastHeading;
+    if (dh > 180) {
+      dh -= 360;
+    }
+    if (dh < -180) {
+      dh += 360;
+    }
+    yaw += TURN_SIGN * (-dh);                    // turning LEFT makes the heading go down
+  }
+  lastHeading = h;
+}
+
+async function startMotion() {
+  // iPhones need permission; Android doesn't
+  if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+    try {
+      await DeviceMotionEvent.requestPermission();
+    } catch (e) {
+      // ignore - camera-only navigation still works
+    }
+  }
+  if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+    try {
+      await DeviceOrientationEvent.requestPermission();
+    } catch (e) {
+      // not an iPhone
+    }
+  }
+  window.addEventListener("deviceorientation", onOrientation);
+  window.addEventListener("devicemotion", onMotion);
+}
+
+function motionText() {
+  if (!motionWorking) {
+    return "motion sensor: OFF";
+  }
+  const side = yaw > 20 ? " (left)" : (yaw < -20 ? " (right)" : "");
+  return "steps " + steps + " | turned " + Math.round(yaw) + "°" + side + " | bounce " + bounce.toFixed(1);
+}
+
 // ---------------- Navigation mode ----------------
 async function startVista() {
+  await startMotion();
   document.getElementById("startArea").style.display = "none";
   document.getElementById("mapBtn").style.display = "none";
   await openCamera();
@@ -301,14 +445,20 @@ function sendFrame() {
   busy = true;
   grabFrame(async (blob) => {
     try {
+      const headers = {};
+      if (motionWorking) {
+        headers["X-Steps"] = String(steps);           // step count + turn travel with each frame
+        headers["X-Yaw"] = yaw.toFixed(1);
+      }
       const res = await fetch("/frame", {
         method: "POST",
         body: blob,
+        headers: headers,
         signal: AbortSignal.timeout(2000)   // give up after 2 s
       });
       const speech = await res.json();
       lastReply = Date.now();
-      statusEl.textContent = "Connected";
+      statusEl.textContent = "Connected | " + motionText();
       if (warned) {
         warned = false;
         say("Connection back");
@@ -340,8 +490,83 @@ async function startMapping(event) {
   document.getElementById("startArea").style.display = "none";
   document.getElementById("mapBtn").style.display = "none";
   await openCamera();
+  await startMotion();                              // count steps + turns between spots
   document.getElementById("mapPanel").style.display = "block";
-  statusEl.textContent = "Mapping: type a spot name, then RECORD";
+  statusEl.textContent = "Mapping: at each spot type its name, then MARK SPOT";
+  setInterval(showMapInfo, 300);
+}
+
+// ---------------- Steps + turns between spots while mapping ----------------
+let mapBaseSteps = 0;
+let mapBaseYaw = 0;
+let prevSpot = null;          // last spot recorded on this walk
+
+function turnWord(deg) {
+  if (deg > 50) {
+    return "turned LEFT (" + Math.round(deg) + "°)";
+  }
+  if (deg < -50) {
+    return "turned RIGHT (" + Math.round(-deg) + "°)";
+  }
+  return "straight";
+}
+
+function showMapInfo() {
+  const walked = steps - mapBaseSteps;
+  const from = prevSpot ? "From " + prevSpot + ": " : "Walk so far: ";
+  const sensor = motionWorking ? "" : "  (motion sensor OFF!)";
+  document.getElementById("mapInfo").textContent =
+    from + walked + " steps, " + turnWord(yaw - mapBaseYaw) + sensor;
+}
+
+function cleanName(text) {
+  return text.trim().toLowerCase().replace(/ /g, "_").replace(/[^a-z0-9_]/g, "");
+}
+
+// Called when RECORD starts at a spot: save the walk from the previous spot to this one
+function markSpot(name) {
+  const walked = steps - mapBaseSteps;
+  const turned = yaw - mapBaseYaw;
+  if (prevSpot && name !== prevSpot && walked >= 2) {
+    fetch("/leg?from=" + encodeURIComponent(prevSpot) + "&to=" + encodeURIComponent(name) +
+          "&steps=" + walked + "&yaw=" + turned.toFixed(0), { method: "POST" })
+      .then(r => r.json())
+      .then(r => { statusEl.textContent = "Saved walk: " + prevSpot + " -> " + name + ", " + walked + " steps, " + turnWord(turned); })
+      .catch(() => { statusEl.textContent = "Could not save the walk - check connection"; });
+  }
+  if (name !== prevSpot) {
+    mapBaseSteps = steps;                            // start counting the next walk from here
+    mapBaseYaw = yaw;
+    prevSpot = name;
+  }
+}
+
+// MARK SPOT: save the steps + turn from the previous spot, no photos
+function markOnly(event) {
+  event.stopPropagation();
+  const name = cleanName(document.getElementById("wpName").value);
+  if (!name) {
+    statusEl.textContent = "Type the spot name first";
+    return;
+  }
+  if (name === prevSpot) {
+    statusEl.textContent = name + " is already marked - type the NEXT spot's name";
+    return;
+  }
+  if (!prevSpot) {
+    statusEl.textContent = "Start of walk: " + name + ". Now walk to the next spot.";
+  }
+  markSpot(name);
+  navigator.vibrate([200, 100, 200]);
+  document.getElementById("wpName").value = "";
+}
+
+function newWalk(event) {
+  event.stopPropagation();
+  prevSpot = null;
+  mapBaseSteps = steps;
+  mapBaseYaw = yaw;
+  statusEl.textContent = "New walk: RECORD the first spot";
 }
 
 function capture() {
@@ -373,6 +598,12 @@ function record() {
   if (recording) {
     return;                           // already recording, ignore extra taps
   }
+  const name = cleanName(document.getElementById("wpName").value);
+  if (!name) {
+    statusEl.textContent = "Type the spot name first";
+    return;
+  }
+  markSpot(name);
   recording = true;
   document.getElementById("recordBtn").textContent = "RECORDING...";
   let shots = 0;
@@ -407,6 +638,8 @@ document.getElementById("mapBtn").onclick = startMapping;
 document.getElementById("captureBtn").onclick = capture;
 document.getElementById("undoBtn").onclick = undo;
 document.getElementById("recordBtn").onclick = record;
+document.getElementById("newWalkBtn").onclick = newWalk;
+document.getElementById("markBtn").onclick = markOnly;
 document.getElementById("typedGo").onclick = typedDestination;
 document.getElementById("typedDest").onclick = (event) => event.stopPropagation();
 loadDestinations();
