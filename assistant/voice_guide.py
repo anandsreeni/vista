@@ -25,6 +25,7 @@ DESTINATION_FILE = os.path.join(HERE, "destination.json")
 SPEECH_FILE = os.path.join(HERE, "latest_speech.json")
 HERE_FILE = os.path.join(HERE, "here.json")                # "I'm at the entrance" from the phone
 MOTION_FILE = os.path.join(HERE, "motion.json")            # step count + turn from the phone
+ASK_FILE = os.path.join(HERE, "ask.json")                  # "where am I?" from the phone
 
 # ---------- Timing ----------
 HAZARD_REPEAT = 6        # seconds before the same safety warning is repeated
@@ -271,6 +272,7 @@ def main():
 
     destination_id = read_json(DESTINATION_FILE, {}).get("id")   # don't re-announce an old destination
     here_id = read_json(HERE_FILE, {}).get("id")                 # ignore an old "I'm at"
+    ask_id = read_json(ASK_FILE, {}).get("id")                   # ignore an old question
 
     destination = None
     known_spot = None             # best guess of where the user is (said, recognised, or counted)
@@ -279,6 +281,7 @@ def main():
     last_nav_text = None
     last_nav_time = 0
     last_hazard_time = 0
+    last_hazard_key = None
     last_stairs_time = 0
     safety_until = 0
     last_gemini_time = 0
@@ -353,6 +356,28 @@ def main():
                     print("[WARNING] step counter is OFF - only the camera can guide. "
                           "Check the phone shows 'steps ...' at the bottom.")
 
+        # --- User asked "Where am I?" ---
+        a = read_json(ASK_FILE, {})
+        if a.get("id") != ask_id:
+            ask_id = a.get("id")
+            if a.get("q") == "where":
+                if segment and motion:
+                    left = max(segment.steps_needed - segment.walked(motion), 0)
+                    answer = (f"You are between {spoken_name(segment.frm, names)} and {segment.to_name}, "
+                              f"about {left} steps from {segment.to_name}.")
+                    if destination:
+                        answer += f" You are going to {spoken_name(destination, names)}."
+                elif known_spot:
+                    answer = f"You are at {spoken_name(known_spot, names)}."
+                    if not destination or place_of(known_spot) == destination:
+                        answer += " Tap the screen and tell me where to go next."
+                else:
+                    answer = ("I'm not sure where you are. Tap the screen and say "
+                              "I'm at, and the place name.")
+                speak(answer)
+                last_nav_time = now
+                safety_until = now + SAFETY_GAP
+
         # --- User said where they are ("I'm at the entrance") ---
         h = read_json(HERE_FILE, {})
         if h.get("id") != here_id:
@@ -365,8 +390,12 @@ def main():
                     speak(f"You are at {spoken_name(h['at'], names)}. Tap the screen and tell me where to go.")
 
         # --- 1. Safety first: interrupts everything ---
-        if p.get("hazard_detected") and now - last_hazard_time > HAZARD_REPEAT:
-            speak("Careful, obstacle ahead.")
+        hazard_key = (p.get("hazard_object"), p.get("hazard_side"))
+        if p.get("hazard_detected") and (hazard_key != last_hazard_key or now - last_hazard_time > HAZARD_REPEAT):
+            obstacle = p.get("hazard_object") or "obstacle"
+            side = p.get("hazard_side") or "ahead"
+            speak(f"Careful, {obstacle} {side}.")             # "Careful, chair ahead."
+            last_hazard_key = hazard_key
             last_hazard_time = now
             safety_until = now + SAFETY_GAP
         elif p.get("staircase_detected") and now - last_stairs_time > STAIRS_REPEAT:

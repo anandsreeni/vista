@@ -133,6 +133,19 @@ def set_destination():
 HERE_FILE = os.path.join(ROOT, "assistant", "here.json")
 
 
+ASK_FILE = os.path.join(ROOT, "assistant", "ask.json")
+
+
+@app.route("/ask", methods=["POST"])
+def ask():
+    # User asked a question by voice, e.g. "where am I?". voice_guide.py answers it.
+    q = request.args.get("q", "")
+    with open(ASK_FILE, "w") as f:
+        json.dump({"q": q, "id": int(time.time() * 1000)}, f)
+    print(f"[ASK] {q}")
+    return jsonify({"ok": True})
+
+
 @app.route("/here", methods=["POST"])
 def set_here():
     # User said "I'm at the entrance". voice_guide.py reads this file.

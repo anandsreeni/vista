@@ -37,7 +37,7 @@
 
 <div id="hint"></div>
 <div id="typedPanel" style="display:none; padding:0.4rem">
-  <input id="typedDest" placeholder="office  /  I'm at the entrance" style="font-size:1.1rem; padding:0.4rem; width:55%">
+  <input id="typedDest" placeholder="office  /  I'm at the entrance  /  where am I" style="font-size:1.1rem; padding:0.4rem; width:55%">
   <button id="typedGo" style="font-size:1.1rem; padding:0.4rem 1rem; margin:0">Go</button>
 </div>
 <div id="status">Not started</div>
@@ -218,8 +218,15 @@ function askDestination() {
 const HERE_PATTERN = /\b(i am|i'm|im|i m|standing)\s+(at|near|in|by|outside)\b/;
 const TO_PATTERN = /\b(take me to|go to|going to|want to go to|to go to|need to go to)\b/;
 
+const WHERE_PATTERN = /\b(where am i|where i am|where are we|current location|my location|which place|where is this)\b/;
+
 function handleHeard(text, sorryIfNot) {
   const t = text.toLowerCase();
+  if (WHERE_PATTERN.test(t)) {                        // "Where am I?"
+    hintEl.textContent = "Asking: where am I?";
+    fetch("/ask?q=where", { method: "POST" }).catch(() => say("Could not reach VISTA. Check the connection."));
+    return true;
+  }
   const here = t.match(HERE_PATTERN);
   let destText = t;
   if (here) {
