@@ -4,10 +4,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VISTA</title>
 <style>
-  body { margin: 0; background: #000; color: #fff; font-family: sans-serif; text-align: center; }
+  body { margin: 0; background: #000; color: #fff; font-family: sans-serif; text-align: center; min-height: 100vh; }
   button { font-size: 1.6rem; padding: 1.2rem 2rem; margin: 0.6rem; border-radius: 12px; border: none; }
-  #menu { margin-top: 25vh; }
+  /* Whole screen is one big button - a blind user can tap anywhere */
+  #startArea { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+               font-size: 2.2rem; padding: 2rem; background: #000; }
+  #mapBtn { position: fixed; top: 8px; right: 8px; z-index: 10; font-size: 0.9rem; padding: 0.5rem 0.8rem;
+            background: #333; color: #aaa; margin: 0; }
   #status { font-size: 1.2rem; padding: 0.8rem; }
+  #hint { font-size: 1.4rem; padding: 0.5rem; color: #ffd54f; }
   video { width: 100%; }
   #mapPanel { display: none; padding: 0.5rem; }
   #wpName { font-size: 1.4rem; padding: 0.6rem; width: 80%; }
@@ -17,18 +22,21 @@
 </style>
 </head>
 <body>
-<div id="menu">
-  <button id="startBtn">Start VISTA</button><br>
-  <button id="mapBtn">Map mode</button>
-</div>
+<div id="startArea">Tap anywhere to start VISTA</div>
+<button id="mapBtn">map mode</button>
 
 <div id="mapPanel">
-  <input id="wpName" placeholder="waypoint name, e.g. room_204"><br>
+  <input id="wpName" placeholder="spot name ONLY, e.g. f1_room_204"><br>
   <button id="recordBtn">RECORD 4 s</button><br>
   <button id="captureBtn">CAPTURE</button><br>
   <button id="undoBtn">Undo last</button>
 </div>
 
+<div id="hint"></div>
+<div id="typedPanel" style="display:none; padding:0.4rem">
+  <input id="typedDest" placeholder="office  /  I'm at the entrance" style="font-size:1.1rem; padding:0.4rem; width:55%">
+  <button id="typedGo" style="font-size:1.1rem; padding:0.4rem 1rem; margin:0">Go</button>
+</div>
 <div id="status">Not started</div>
 <video id="video" autoplay playsinline muted></video>
 <canvas id="canvas" width="640" height="480" hidden></canvas>
@@ -37,19 +45,27 @@
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const statusEl = document.getElementById("status");
+const hintEl = document.getElementById("hint");
 
 let lastSpokenId = null;   // id of the last sentence we spoke
 let lastReply = Date.now();
 let warned = false;        // already said "connection lost"?
 let busy = false;          // a frame is still uploading
+let navigating = false;
+let listening = false;     // microphone is on - don't talk over the user
+let destinations = [];     // [{id: "f0_staffroom", name: "the staffroom"}, ...]
 
-function say(text) {
+function say(text, onDone) {
   speechSynthesis.cancel();                 // newest message wins
-  speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-IN";
+  if (onDone) {
+    u.onend = onDone;
+  }
+  speechSynthesis.speak(u);
 }
 
 async function openCamera() {
-  document.getElementById("menu").style.display = "none";
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "environment", width: 640, height: 480 },   // back camera
     audio: false
@@ -68,13 +84,215 @@ function grabFrame(callback) {
   canvas.toBlob(callback, "image/jpeg", 0.7);
 }
 
+// ---------------- Destinations by voice ----------------
+async function loadDestinations() {
+  try {
+    const res = await fetch("/destinations");
+    destinations = (await res.json()).destinations;
+  } catch (e) {
+    destinations = [];
+  }
+}
+
+// Words that don't help pick a place ("take me to the room 104 please" -> "104")
+const STOP_WORDS = new Set(["the", "a", "an", "to", "go", "take", "me", "i", "want", "please",
+  "room", "where", "is", "of", "on", "floor", "near", "s"]);
+
+// Other ways people say the same thing
+const SAME_AS = { "mens": "men", "gents": "men", "boys": "men", "womens": "women", "ladies": "women",
+  "girls": "women", "toilet": "washroom", "bathroom": "washroom", "restroom": "washroom",
+  "loo": "washroom", "exit": "entrance", "door": "entrance" };
+
+function cleanWords(text) {
+  return text.toLowerCase().replace(/'/g, "").replace(/[^a-z0-9 ]/g, " ").split(/\s+/)
+    .map(w => SAME_AS[w] || w).filter(w => w && !STOP_WORDS.has(w));
+}
+
+function matchDestination(heard) {
+  let best = null;
+  let bestScore = 0;
+  for (const place of destinations) {
+    const placeText = (place.name + " " + place.id.replace(/_/g, " ")).toLowerCase();
+    const placeWords = placeText.replace(/[^a-z0-9 ]/g, " ").split(/\s+/);
+    const joined = placeText.replace(/[^a-z0-9]/g, "");     // "staffroom" also matches "staff room"
+    let score = 0;
+    for (const w of cleanWords(heard)) {
+      if (placeWords.includes(w)) {
+        score += /\d/.test(w) ? 5 : 2;      // room numbers count most
+      } else if (w.length > 3 && joined.includes(w)) {
+        score += 1;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = place;
+    }
+  }
+  return best;
+}
+
+async function setDestination(id) {
+  try {
+    await fetch("/destination?to=" + encodeURIComponent(id), { method: "POST" });
+  } catch (e) {
+    say("Could not set the destination. Check the connection.");
+  }
+}
+
+function askDestination() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    say("Voice input is not available on this phone.");
+    return;
+  }
+  if (listening) {
+    return;
+  }
+  listening = true;
+  hintEl.textContent = "Asking...";
+
+  // Start the microphone when the question finishes - or after 2.5 s anyway,
+  // because some phones never report that speech finished
+  let started = false;
+  const startMic = () => {
+    if (started) {
+      return;
+    }
+    started = true;
+    const rec = new Recognition();
+    rec.lang = "en-IN";
+    rec.maxAlternatives = 3;
+    rec.onstart = () => {
+      hintEl.textContent = "Speak now...";
+      navigator.vibrate(150);                      // buzz = microphone is on
+    };
+    rec.onresult = (event) => {
+      // try each guess of what was said, use the first one that makes sense
+      let handled = false;
+      let heard = "";
+      for (const alt of event.results[0]) {
+        heard = alt.transcript;
+        if (handleHeard(heard, false)) {
+          handled = true;
+          break;
+        }
+      }
+      if (!handled) {
+        handleHeard(heard, true);                    // speaks "Sorry, I didn't find that..."
+      }
+    };
+    rec.onerror = (event) => {
+      // Show the real reason on screen so the team can fix it
+      hintEl.textContent = "Voice error: " + event.error;
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        say("Microphone permission is off.");
+      } else if (event.error === "network") {
+        say("Voice needs internet on the phone.");
+      } else {
+        say("Sorry, I didn't hear you. Tap the screen to try again.");
+      }
+    };
+    rec.onend = () => {
+      listening = false;
+      if (hintEl.textContent === "Speak now...") {
+        hintEl.textContent = "Heard nothing - tap to try again";
+      }
+    };
+    try {
+      rec.start();
+    } catch (e) {
+      listening = false;
+      hintEl.textContent = "Voice error: " + e.message;
+    }
+  };
+
+  say("Where do you want to go?", startMic);
+  setTimeout(startMic, 2500);
+}
+
+// What the user said -> "I'm at X" and/or "take me to Y".
+// Returns true if it understood. sorryIfNot = speak the help message when it didn't.
+const HERE_PATTERN = /\b(i am|i'm|im|i m|standing)\s+(at|near|in|by|outside)\b/;
+const TO_PATTERN = /\b(take me to|go to|going to|want to go to|to go to|need to go to)\b/;
+
+function handleHeard(text, sorryIfNot) {
+  const t = text.toLowerCase();
+  const here = t.match(HERE_PATTERN);
+  let destText = t;
+  if (here) {
+    const rest = t.slice(here.index + here[0].length);  // "the entrance take me to the office"
+    let hereText = rest;
+    destText = "";
+    const to = rest.match(TO_PATTERN);
+    if (to) {
+      hereText = rest.slice(0, to.index);
+      destText = rest.slice(to.index + to[0].length);
+    }
+    const herePlace = matchDestination(hereText);
+    if (!herePlace) {
+      if (sorryIfNot) {
+        hintEl.textContent = "Didn't catch: " + text;
+        say("Sorry, I don't know that place. Tap the screen to try again.");
+      }
+      return false;
+    }
+    if (destText) {
+      const destPlace = matchDestination(destText);
+      if (destPlace) {
+        setDestination(destPlace.id);
+      }
+    }
+    hintEl.textContent = "You are at " + herePlace.name;
+    setTimeout(() => setHere(herePlace.id), 400);  // after the destination, so directions use it
+    return true;
+  }
+  const place = matchDestination(destText);
+  if (place) {
+    hintEl.textContent = "Going to " + place.name;
+    setDestination(place.id);                      // voice_guide.py says "Going to ..."
+    return true;
+  }
+  if (sorryIfNot) {
+    hintEl.textContent = "Didn't catch: " + text;
+    say("Sorry, I didn't find that. You can say " +
+        destinations.map(d => d.name).join(", ") + ". Tap the screen to try again.");
+  }
+  return false;
+}
+
+async function setHere(id) {
+  try {
+    await fetch("/here?at=" + encodeURIComponent(id), { method: "POST" });
+  } catch (e) {
+    say("Could not send your location. Check the connection.");
+  }
+}
+
+// Typed box - backup for the team while testing (same sentences as voice)
+function typedDestination(event) {
+  event.stopPropagation();
+  handleHeard(document.getElementById("typedDest").value, true);
+}
+
 // ---------------- Navigation mode ----------------
 async function startVista() {
+  document.getElementById("startArea").style.display = "none";
+  document.getElementById("mapBtn").style.display = "none";
   await openCamera();
-  say("VISTA started");
-  setInterval(sendFrame, 200);        // 5 frames per second
+  navigating = true;
+  document.getElementById("typedPanel").style.display = "block";
+  await setDestination("");                         // start with no destination
+  setInterval(sendFrame, 200);                      // 5 frames per second
   setInterval(checkConnection, 500);
+  askDestination();                                 // "Where do you want to go?"
 }
+
+// While navigating, a tap ANYWHERE asks for a new destination
+document.body.addEventListener("click", () => {
+  if (navigating) {
+    askDestination();
+  }
+});
 
 function sendFrame() {
   if (busy) {
@@ -97,8 +315,9 @@ function sendFrame() {
       }
       if (lastSpokenId === null) {
         lastSpokenId = speech.id;     // first reply: don't repeat an old message
-      } else if (speech.id !== lastSpokenId && speech.text) {
-        lastSpokenId = speech.id;
+      } else if (speech.id !== lastSpokenId && speech.text && !listening) {
+        lastSpokenId = speech.id;     // (while listening, wait - it is spoken right after)
+        hintEl.textContent = speech.text;
         say(speech.text);
       }
     } catch (e) {
@@ -115,11 +334,14 @@ function checkConnection() {
   }
 }
 
-// ---------------- Mapping mode ----------------
-async function startMapping() {
+// ---------------- Mapping mode (for the team, not the user) ----------------
+async function startMapping(event) {
+  event.stopPropagation();
+  document.getElementById("startArea").style.display = "none";
+  document.getElementById("mapBtn").style.display = "none";
   await openCamera();
   document.getElementById("mapPanel").style.display = "block";
-  statusEl.textContent = "Mapping: type a name, then CAPTURE";
+  statusEl.textContent = "Mapping: type a spot name, then RECORD";
 }
 
 function capture() {
@@ -177,11 +399,17 @@ async function undo() {
   }
 }
 
-document.getElementById("startBtn").onclick = startVista;
+document.getElementById("startArea").onclick = (event) => {
+  event.stopPropagation();
+  startVista();
+};
 document.getElementById("mapBtn").onclick = startMapping;
 document.getElementById("captureBtn").onclick = capture;
 document.getElementById("undoBtn").onclick = undo;
 document.getElementById("recordBtn").onclick = record;
+document.getElementById("typedGo").onclick = typedDestination;
+document.getElementById("typedDest").onclick = (event) => event.stopPropagation();
+loadDestinations();
 </script>
 </body>
 </html>

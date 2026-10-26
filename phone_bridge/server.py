@@ -78,5 +78,44 @@ def undo():
     return jsonify({"ok": True, "name": name, "count": len(photos) - 1})
 
 
+ROUTE_FILE = os.path.join(ROOT, "assistant", "route.json")
+DESTINATION_FILE = os.path.join(ROOT, "assistant", "destination.json")
+
+
+@app.route("/destinations")
+def destinations():
+    # Places for the phone's "Where to?" list = the "names" in assistant/route.json
+    try:
+        with open(ROUTE_FILE, "r") as f:
+            names = json.load(f).get("names", {})
+    except (FileNotFoundError, json.JSONDecodeError):
+        names = {}
+    places = [{"id": k, "name": v} for k, v in sorted(names.items())]
+    return jsonify({"destinations": places})
+
+
+@app.route("/destination", methods=["POST"])
+def set_destination():
+    # Phone picked a destination ("" = just tell me where I am). voice_guide.py reads this file.
+    to = request.args.get("to", "")
+    with open(DESTINATION_FILE, "w") as f:
+        json.dump({"to": to, "id": int(time.time() * 1000)}, f)
+    print(f"[NAV] destination set to: {to or '(none)'}")
+    return jsonify({"ok": True, "to": to})
+
+
+HERE_FILE = os.path.join(ROOT, "assistant", "here.json")
+
+
+@app.route("/here", methods=["POST"])
+def set_here():
+    # User said "I'm at the entrance". voice_guide.py reads this file.
+    at = request.args.get("at", "")
+    with open(HERE_FILE, "w") as f:
+        json.dump({"at": at, "id": int(time.time() * 1000)}, f)
+    print(f"[NAV] user says they are at: {at}")
+    return jsonify({"ok": True, "at": at})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, ssl_context="adhoc")
